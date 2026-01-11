@@ -23,19 +23,17 @@ def get_indian_movies(total_target=2100):
     languages = ['hi', 'te', 'ta', 'kn', 'ml', 'pa', 'bn', 'mr']
     
     # Calculate pages needed per language (approx 20 movies per page)
-    # We aim for ~270 movies per language to safely hit 2000+
     pages_per_lang = (total_target // len(languages) // 20) + 5 
 
     for lang in languages:
         print(f"Deep crawling movies for language: {lang}...")
         for page in range(1, pages_per_lang + 1):
             try:
-                # We use sort_by=primary_release_date.desc to ensure we get "recent" movies first
                 url = (
                     f"https://api.themoviedb.org/3/discover/movie?api_key={TMDB_API_KEY}"
                     f"&region=IN&with_origin_country=IN&with_original_language={lang}"
                     f"&sort_by=primary_release_date.desc&include_adult=false&page={page}"
-                    f"&primary_release_year.gte=2000" # Focus on movies from the last 25 years
+                    f"&primary_release_year.gte=2000" 
                 )
                 response = requests.get(url)
                 if response.status_code == 429: # Rate limit handling
@@ -47,11 +45,10 @@ def get_indian_movies(total_target=2100):
                 results = data.get('results', [])
                 
                 if not results:
-                    break # Stop if no more movies for this language
+                    break 
                     
                 all_movies.extend(results)
                 
-                # Exit early if we've gathered enough candidates to process
                 if len(all_movies) > total_target + 500:
                     break
                     
@@ -61,46 +58,53 @@ def get_indian_movies(total_target=2100):
     
     return all_movies
 
-def get_global_books():
-    """Fetch books from 15 diverse categories to maximize row count"""
+def get_global_books(items_per_query=120):
+    """Fetch a massive collection of books across 30+ categories with pagination"""
     queries = [
         "fiction", "mystery", "history", "science", "biography", "thriller",
         "philosophy", "technology", "romance", "fantasy", "business", "travel",
-        "self-help", "poetry", "art"
+        "self-help", "poetry", "art", "psychology", "economics", "cooking",
+        "health", "religion", "politics", "sociology", "education", "law",
+        "adventure", "classics", "comics", "drama", "horror", "poetry"
     ]
     all_books = []
     
     for query in queries:
-        try:
-            print(f"Fetching books for category: {query}...")
-            # Google Books max is 40 per request
-            url = f"https://www.googleapis.com/books/v1/volumes?q={query}&orderBy=newest&maxResults=40"
-            response = requests.get(url)
-            response.raise_for_status()
-            data = response.json()
-            items = data.get('items', [])
-            all_books.extend(items)
-        except Exception as e:
-            print(f"Error fetching books for {query}: {e}")
-            continue
+        print(f"Deep crawling books for category: {query}...")
+        # Paginate through each category to get more than just the first 40 results
+        for start_index in range(0, items_per_query, 40):
+            try:
+                # maxResults is 40, startIndex allows us to get the next set
+                url = f"https://www.googleapis.com/books/v1/volumes?q={query}&orderBy=newest&maxResults=40&startIndex={start_index}"
+                response = requests.get(url)
+                response.raise_for_status()
+                data = response.json()
+                items = data.get('items', [])
+                
+                if not items:
+                    break
+                    
+                all_books.extend(items)
+                # Short sleep to respect Google Books API
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"Error fetching books for {query} at index {start_index}: {e}")
+                continue
     
     return all_books
 
 def run_sync():
     # --- Process Movies ---
-    # Fetching a large batch to filter for quality (must have overview)
     movie_candidates = get_indian_movies(total_target=2200) 
     synced_movies = 0
     print(f"Total movie candidates fetched: {len(movie_candidates)}. Starting vector processing...")
     
     for m in movie_candidates:
         try:
-            # Skip if no metadata exists for embedding
             if not m.get('overview') or not m.get('title'):
                 continue
                 
             text_content = f"{m['title']}. {m.get('overview', '')}"
-            # Embeddings are essential for the recommendation engine
             embedding = model.encode(text_content).tolist()
             
             movie_payload = {
@@ -116,18 +120,19 @@ def run_sync():
             supabase.table("movies").upsert(movie_payload, on_conflict="tmdb_id").execute()
             synced_movies += 1
             
-            if synced_movies % 50 == 0:
+            if synced_movies % 100 == 0:
                 print(f"Progress: {synced_movies} movies synced to database...")
                 
         except Exception as e:
-            pass # Silent skip for malformed data
+            pass 
 
     print(f"Successfully finished movie sync. Total unique movies in DB: {synced_movies}")
 
     # --- Process Books ---
-    book_items = get_global_books()
+    # Fetching significantly more books using deep crawl
+    book_items = get_global_books(items_per_query=120)
     synced_books = 0
-    print(f"Total book candidates fetched: {len(book_items)}. Starting processing...")
+    print(f"Total book candidates fetched: {len(book_items)}. Starting vector processing...")
     
     for b in book_items:
         try:
@@ -150,12 +155,12 @@ def run_sync():
             }
             supabase.table("books").upsert(book_payload, on_conflict="google_id").execute()
             synced_books += 1
-            if synced_books % 50 == 0:
+            if synced_books % 100 == 0:
                 print(f"Progress: {synced_books} books synced...")
         except Exception as e:
             pass
 
-    print(f"Successfully finished book sync. Total: {synced_books}")
+    print(f"Successfully finished book sync. Total unique books in DB: {synced_books}")
     print("Full database update completed. Ready for hybrid recommendation serving.")
 
 if __name__ == "__main__":
