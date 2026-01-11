@@ -1,0 +1,87 @@
+CineLibre - Project Documentation
+
+1. Project Overview
+
+CineLibre is a hybrid AI-powered recommendation platform designed to bridge the gap between Indian regional cinema (Bollywood, Tollywood, Kollywood, etc.) and global literature. It utilizes Semantic Search and Machine Learning to provide deep, meaning-based discovery rather than simple keyword matching.
+
+2. Technical Stack
+
+Database: Supabase (PostgreSQL) + pgvector for similarity search.
+
+Backend: FastAPI (Python 3.11) hosted on Koyeb (Free Tier).
+
+ML Model: all-MiniLM-L6-v2 (Sentence Transformers) for 384-dimensional embeddings.
+
+Automation: GitHub Actions for daily data ingestion.
+
+Data Sources: TMDB API (Movies) & Google Books API (Books).
+
+3. Completed Milestones
+
+Phase 1: Database & Infrastructure
+
+Supabase Setup: Initialized a PostgreSQL instance with the vector extension enabled.
+
+Schema Design: Created movies and books tables with vector columns to store ML embeddings.
+
+Vector Functions: Implemented Postgres RPC functions (match_movies and match_books) to perform high-speed Cosine Similarity searches directly within the database.
+
+Phase 2: Data Engineering & Sync Engine
+
+Sync Engine (sync_engine.py): Developed a Python script that:
+
+Fetches metadata for 2000+ movies across 8 Indian regional languages.
+
+Fetches hundreds of books across 30+ categories.
+
+Generates ML embeddings for every item using sentence-transformers.
+
+Performs an upsert to keep the database fresh without duplicates.
+
+Automation (sync.yml): Configured a GitHub Action to run the sync engine every 24 hours at $0 cost.
+
+Phase 3: Backend & ML API
+
+FastAPI Core (main.py): Built a production-ready API with the following endpoints:
+
+GET /: Health check.
+
+GET /search/semantic: Converts natural language queries (e.g., "mystery in a small town") into vectors and retrieves matches from Supabase.
+
+GET /recommendations/content/{id}: Finds similar items based on the vector of a specific movie or book.
+
+Local Verification: Confirmed that the API returns accurate semantic matches (e.g., correctly identifying "Forest" and "Eklavya" for forest-based action queries).
+
+4. Current Configuration
+
+Environment Variables Required
+
+Variable
+
+Purpose
+
+SUPABASE_URL
+
+Connection to the Supabase Project
+
+SUPABASE_KEY
+
+Service Role Key for DB operations
+
+TMDB_API_KEY
+
+Authentication for movie data ingestion
+
+PORT
+
+Set to 8000 for FastAPI
+
+5. Next Steps
+
+Cloud Deployment: Finalize the deployment of api/main.py to Koyeb.
+
+Frontend Development: Build the React/Tailwind CSS dashboard to consume the API.
+
+Hybrid Logic: Implement Collaborative Filtering (SVD) once user interaction data begins to accumulate.
+
+SaaS Features: Integrate Stripe for the "Pro" subscription tier.
