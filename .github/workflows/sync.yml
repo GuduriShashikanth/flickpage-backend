@@ -1,0 +1,33 @@
+# GitHub Action for Daily Sync
+# .github/workflows/sync.yml
+name: Daily Content Sync
+
+on:
+  schedule:
+    # Runs at 00:00 UTC every day ($0 investment)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allows you to manually trigger the sync from the GitHub Actions tab
+
+jobs:
+  build_and_sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install ML & Database Dependencies
+        run: |
+          pip install requests supabase sentence-transformers torch
+
+      - name: Execute Sync Engine
+        env:
+          # These secrets must be added to your GitHub Repo Settings
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python sync_engine.py
