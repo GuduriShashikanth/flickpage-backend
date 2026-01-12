@@ -3,8 +3,8 @@ name: Daily Content Sync
 
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch: 
+    - cron: '0 0 * * *' # Runs at midnight UTC
+  workflow_dispatch: # Allows manual trigger
 
 jobs:
   build_and_sync:
@@ -19,14 +19,15 @@ jobs:
           python-version: '3.11'
 
       - name: Install ML & Database Dependencies
-        # Using the requirements.txt inside the api folder
+        # Updated: Now pointing to the root requirements.txt
         run: |
-          pip install -r api/requirements.txt
+          pip install -r requirements.txt
 
       - name: Execute Sync Engine
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        # Explicitly running the script from the api folder
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        # The script remains in the api/ folder
         run: python api/sync_engine.py
