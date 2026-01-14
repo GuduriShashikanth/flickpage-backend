@@ -24,6 +24,8 @@ from api.models import (
     RatingCreate, RatingResponse, InteractionCreate,
     RecommendationResponse
 )
+from typing import Union
+from uuid import UUID
 
 # 1. Setup Logging
 logging.basicConfig(level=logging.INFO)
@@ -213,10 +215,9 @@ async def semantic_search(
     q: str = Query(..., min_length=3), 
     type: str = "movie", 
     limit: int = 12,
-    threshold: float = 0.4,
-    current_user: Optional[dict] = Depends(get_current_user)
+    threshold: float = 0.4
 ):
-    """Semantic search with optional user context"""
+    """Semantic search - no authentication required"""
     m = get_model()
     db = get_db()
     if not m or not db:
@@ -265,7 +266,7 @@ async def get_personalized_recommendations(
 @app.get("/recommendations/similar/{item_type}/{item_id}")
 async def get_similar_items(
     item_type: str,
-    item_id: int,
+    item_id: str,  # UUID as string
     limit: int = 12
 ):
     """Get similar items using content-based filtering"""
@@ -290,7 +291,7 @@ async def get_similar_items(
         }).execute()
         
         # Filter out the item itself
-        similar = [r for r in result.data if r.get("id") != item_id][:limit]
+        similar = [r for r in result.data if str(r.get("id")) != str(item_id)][:limit]
         
         return {"item_id": item_id, "similar_items": similar, "method": "content_based"}
     except Exception as e:
@@ -315,7 +316,7 @@ async def get_popular_items(limit: int = 20):
 # ==================== MOVIE/BOOK ENDPOINTS ====================
 
 @app.get("/movies/{movie_id}")
-async def get_movie(movie_id: int):
+async def get_movie(movie_id: str):  # UUID as string
     """Get movie details"""
     db = get_db()
     result = db.table("movies").select("*").eq("id", movie_id).execute()
@@ -324,7 +325,7 @@ async def get_movie(movie_id: int):
     return result.data[0]
 
 @app.get("/books/{book_id}")
-async def get_book(book_id: int):
+async def get_book(book_id: str):  # UUID as string
     """Get book details"""
     db = get_db()
     result = db.table("books").select("*").eq("id", book_id).execute()
