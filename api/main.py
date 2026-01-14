@@ -66,6 +66,7 @@ app.add_middleware(
 )
 
 @app.get("/")
+@app.head("/")
 async def health_check():
     """Health check triggers model loading if not already loaded"""
     m = get_model()
