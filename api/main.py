@@ -7,11 +7,23 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["ONNXRUNTIME_ENABLE_TELEMETRY"] = "0"
 
 import logging
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from supabase import create_client, Client
 from fastembed import TextEmbedding
 from dotenv import load_dotenv
+from typing import List, Optional
+
+# Import local modules
+from api.database import get_db
+from api.auth import (
+    hash_password, verify_password, create_access_token, 
+    get_current_user
+)
+from api.models import (
+    UserRegister, UserLogin, TokenResponse, UserResponse,
+    RatingCreate, RatingResponse, InteractionCreate,
+    RecommendationResponse
+)
 
 # 1. Setup Logging
 logging.basicConfig(level=logging.INFO)
@@ -19,8 +31,6 @@ logger = logging.getLogger(__name__)
 
 # 2. Configuration
 load_dotenv()
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # 3. Initialize FastEmbed
 # We use a singleton pattern to ensure the model only ever exists once in memory
@@ -38,17 +48,12 @@ def get_model():
             logger.error(f"Model Load Failed: {e}")
     return _model
 
-# 4. Initialize Supabase
-supabase: Client = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("Supabase connected.")
-    except Exception as e:
-        logger.error(f"Supabase Init Error: {e}")
-
-# 5. FastAPI App
-app = FastAPI(title="CineLibre ML API - Nano Instance Optimized")
+# 4. FastAPI App
+app = FastAPI(
+    title="CineLibre - Full Stack Recommendation API",
+    description="MovieLens-style recommendation system for Indian cinema",
+    version="2.0.0"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,22 +67,159 @@ app.add_middleware(
 async def health_check():
     """Health check triggers model loading if not already loaded"""
     m = get_model()
+    db = get_db()
     return {
         "status": "online",
         "engine": "FastEmbed",
         "ready": m is not None,
-        "database": "connected" if supabase else "error"
+        "database": "connected" if db else "error",
+        "version": "2.0.0"
     }
+
+# ==================== AUTH ENDPOINTS ====================
+
+@app.post("/auth/register", response_model=TokenResponse)
+async def register(user_data: UserRegister):
+    """Register a new user"""
+    db = get_db()
+    
+    # Check if user exists
+    existing = db.table("users").select("id").eq("email", user_data.email).execute()
+    if existing.data:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create user
+    hashed_pw = hash_password(user_data.password)
+    new_user = db.table("users").insert({
+        "email": user_data.email,
+        "password_hash": hashed_pw,
+        "name": user_data.name
+    }).execute()
+    
+    if not new_user.data:
+        raise HTTPException(status_code=500, detail="Failed to create user")
+    
+    user = new_user.data[0]
+    token = create_access_token({"user_id": user["id"], "email": user["email"]})
+    
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": UserResponse(**user)
+    }
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(credentials: UserLogin):
+    """Login user"""
+    db = get_db()
+    
+    # Find user
+    result = db.table("users").select("*").eq("email", credentials.email).execute()
+    if not result.data:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    user = result.data[0]
+    
+    # Verify password
+    if not verify_password(credentials.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    token = create_access_token({"user_id": user["id"], "email": user["email"]})
+    
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": UserResponse(**user)
+    }
+
+@app.get("/auth/me", response_model=UserResponse)
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Get current user profile"""
+    db = get_db()
+    result = db.table("users").select("*").eq("id", current_user["user_id"]).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserResponse(**result.data[0])
+
+# ==================== RATING ENDPOINTS ====================
+
+@app.post("/ratings", response_model=RatingResponse)
+async def create_rating(
+    rating_data: RatingCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create or update a rating"""
+    db = get_db()
+    
+    # Upsert rating
+    result = db.table("ratings").upsert({
+        "user_id": current_user["user_id"],
+        "item_id": rating_data.item_id,
+        "item_type": rating_data.item_type,
+        "rating": rating_data.rating
+    }, on_conflict="user_id,item_id,item_type").execute()
+    
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to save rating")
+    
+    return RatingResponse(**result.data[0])
+
+@app.get("/ratings/my", response_model=List[RatingResponse])
+async def get_my_ratings(
+    item_type: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get current user's ratings"""
+    db = get_db()
+    query = db.table("ratings").select("*").eq("user_id", current_user["user_id"])
+    
+    if item_type:
+        query = query.eq("item_type", item_type)
+    
+    result = query.order("created_at", desc=True).execute()
+    return [RatingResponse(**r) for r in result.data]
+
+@app.delete("/ratings/{rating_id}")
+async def delete_rating(
+    rating_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a rating"""
+    db = get_db()
+    result = db.table("ratings").delete().eq("id", rating_id).eq("user_id", current_user["user_id"]).execute()
+    return {"message": "Rating deleted"}
+
+# ==================== INTERACTION TRACKING ====================
+
+@app.post("/interactions")
+async def track_interaction(
+    interaction: InteractionCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Track user interaction (view, click, search)"""
+    db = get_db()
+    
+    result = db.table("interactions").insert({
+        "user_id": current_user["user_id"],
+        "item_id": interaction.item_id,
+        "item_type": interaction.item_type,
+        "interaction_type": interaction.interaction_type
+    }).execute()
+    
+    return {"message": "Interaction tracked"}
 
 @app.get("/search/semantic")
 async def semantic_search(
     q: str = Query(..., min_length=3), 
     type: str = "movie", 
     limit: int = 12,
-    threshold: float = 0.4 
+    threshold: float = 0.4,
+    current_user: Optional[dict] = Depends(get_current_user)
 ):
+    """Semantic search with optional user context"""
     m = get_model()
-    if not m or not supabase:
+    db = get_db()
+    if not m or not db:
         raise HTTPException(status_code=500, detail="System initializing...")
     
     try:
@@ -86,7 +228,7 @@ async def semantic_search(
         query_vector = query_embeddings[0].tolist()
 
         rpc_function = "match_movies" if type == "movie" else "match_books"
-        response = supabase.rpc(rpc_function, {
+        response = db.rpc(rpc_function, {
             "query_embedding": query_vector,
             "match_threshold": threshold,
             "match_count": limit
@@ -96,6 +238,106 @@ async def semantic_search(
     except Exception as e:
         logger.error(f"Search Error: {e}")
         raise HTTPException(status_code=500, detail="Search processing failed.")
+
+# ==================== RECOMMENDATION ENDPOINTS ====================
+
+@app.get("/recommendations/personalized")
+async def get_personalized_recommendations(
+    limit: int = 20,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get personalized recommendations using collaborative filtering"""
+    db = get_db()
+    
+    try:
+        # Call Supabase RPC function for collaborative filtering
+        result = db.rpc("get_collaborative_recommendations", {
+            "target_user_id": current_user["user_id"],
+            "recommendation_count": limit
+        }).execute()
+        
+        return {"recommendations": result.data, "method": "collaborative_filtering"}
+    except Exception as e:
+        logger.error(f"Recommendation Error: {e}")
+        # Fallback to popular items
+        return await get_popular_items(limit)
+
+@app.get("/recommendations/similar/{item_type}/{item_id}")
+async def get_similar_items(
+    item_type: str,
+    item_id: int,
+    limit: int = 12
+):
+    """Get similar items using content-based filtering"""
+    db = get_db()
+    
+    try:
+        # Get item embedding
+        table = "movies" if item_type == "movie" else "books"
+        item = db.table(table).select("embedding").eq("id", item_id).execute()
+        
+        if not item.data:
+            raise HTTPException(status_code=404, detail="Item not found")
+        
+        embedding = item.data[0]["embedding"]
+        
+        # Find similar items
+        rpc_function = "match_movies" if item_type == "movie" else "match_books"
+        result = db.rpc(rpc_function, {
+            "query_embedding": embedding,
+            "match_threshold": 0.5,
+            "match_count": limit + 1  # +1 to exclude self
+        }).execute()
+        
+        # Filter out the item itself
+        similar = [r for r in result.data if r.get("id") != item_id][:limit]
+        
+        return {"item_id": item_id, "similar_items": similar, "method": "content_based"}
+    except Exception as e:
+        logger.error(f"Similar items error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get similar items")
+
+@app.get("/recommendations/popular")
+async def get_popular_items(limit: int = 20):
+    """Get popular items based on ratings"""
+    db = get_db()
+    
+    try:
+        result = db.rpc("get_popular_items", {
+            "item_limit": limit
+        }).execute()
+        
+        return {"popular_items": result.data, "method": "popularity_based"}
+    except Exception as e:
+        logger.error(f"Popular items error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get popular items")
+
+# ==================== MOVIE/BOOK ENDPOINTS ====================
+
+@app.get("/movies/{movie_id}")
+async def get_movie(movie_id: int):
+    """Get movie details"""
+    db = get_db()
+    result = db.table("movies").select("*").eq("id", movie_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Movie not found")
+    return result.data[0]
+
+@app.get("/books/{book_id}")
+async def get_book(book_id: int):
+    """Get book details"""
+    db = get_db()
+    result = db.table("books").select("*").eq("id", book_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return result.data[0]
+
+@app.get("/movies")
+async def list_movies(skip: int = 0, limit: int = 20):
+    """List movies with pagination"""
+    db = get_db()
+    result = db.table("movies").select("*").range(skip, skip + limit - 1).execute()
+    return {"movies": result.data, "skip": skip, "limit": limit}
 
 if __name__ == "__main__":
     import uvicorn

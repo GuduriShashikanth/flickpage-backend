@@ -6,3 +6,8 @@ requests
 fastembed
 python-dotenv
 pydantic
+pydantic[email]
+pyjwt
+passlib[bcrypt]
+python-multipart
+psutil
