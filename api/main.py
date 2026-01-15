@@ -484,6 +484,13 @@ async def list_movies(skip: int = 0, limit: int = 20):
     result = db.table("movies").select("*").range(skip, skip + limit - 1).execute()
     return {"movies": result.data, "skip": skip, "limit": limit}
 
+@app.get("/books")
+async def list_books(skip: int = 0, limit: int = 20):
+    """List books with pagination"""
+    db = get_db()
+    result = db.table("books").select("*").range(skip, skip + limit - 1).execute()
+    return {"books": result.data, "skip": skip, "limit": limit}
+
 if __name__ == "__main__":
     import uvicorn
     # Using environment variables for port to support Koyeb
