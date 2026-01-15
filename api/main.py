@@ -266,21 +266,49 @@ async def get_personalized_recommendations(
             return await get_content_based_recommendations(current_user["user_id"], limit, db)
     except Exception as e:
         logger.error(f"Recommendation Error: {e}")
-        # Fallback to popular items
-        return await get_popular_items(limit)
+        # Try content-based instead of popular
+        try:
+            return await get_content_based_recommendations(current_user["user_id"], limit, db)
+        except:
+            # Last resort: return empty with error method
+            return {"recommendations": [], "method": "error", "message": "Unable to generate personalized recommendations"}
 
 async def get_content_based_recommendations(user_id: int, limit: int, db):
     """Get recommendations based on user's rated items"""
     try:
         # Get user's top-rated items
-        user_ratings = db.table("ratings").select("item_id, item_type, rating").eq("user_id", user_id).gte("rating", 4.0).order("rating", desc=True).limit(3).execute()
+        user_ratings = db.table("ratings").select("item_id, item_type, rating").eq("user_id", user_id).gte("rating", 3.5).order("rating", desc=True).limit(5).execute()
         
         if not user_ratings.data:
-            # No high ratings, return popular items
-            return await get_popular_items(limit)
+            # No ratings at all - return diverse recent items instead of popular
+            logger.info("No user ratings, returning diverse recent items")
+            movies = db.table("movies").select("id, title, poster_url, language").order("created_at", desc=True).limit(limit // 2).execute()
+            books = db.table("books").select("id, title, thumbnail_url, authors").order("created_at", desc=True).limit(limit // 2).execute()
+            
+            recommendations = []
+            for m in movies.data:
+                recommendations.append({
+                    "item_id": str(m["id"]),
+                    "item_type": "movie",
+                    "title": m["title"],
+                    "poster_url": m["poster_url"]
+                })
+            for b in books.data:
+                recommendations.append({
+                    "item_id": str(b["id"]),
+                    "item_type": "book",
+                    "title": b["title"],
+                    "poster_url": b.get("thumbnail_url")
+                })
+            
+            return {"recommendations": recommendations[:limit], "method": "diverse_recent"}
         
         recommendations = []
         seen_ids = set()
+        
+        # Add user's rated items to seen set to exclude them
+        for rating in user_ratings.data:
+            seen_ids.add(str(rating["item_id"]))
         
         # For each highly rated item, find similar items
         for rating in user_ratings.data:
@@ -300,21 +328,22 @@ async def get_content_based_recommendations(user_id: int, limit: int, db):
             rpc_function = "match_movies" if item_type == "movie" else "match_books"
             result = db.rpc(rpc_function, {
                 "query_embedding": embedding,
-                "match_threshold": 0.4,
-                "match_count": 10
+                "match_threshold": 0.3,  # Lower threshold for more results
+                "match_count": 15
             }).execute()
             
-            # Add to recommendations if not already seen
+            # Add to recommendations if not already seen or rated
             for rec in result.data:
                 rec_id = str(rec.get("id"))
-                if rec_id not in seen_ids and rec_id != str(item_id):
+                if rec_id not in seen_ids:
                     seen_ids.add(rec_id)
                     recommendations.append({
                         "item_id": rec_id,
                         "item_type": item_type,
                         "title": rec.get("title"),
                         "poster_url": rec.get("poster_url") or rec.get("thumbnail_url"),
-                        "similarity": rec.get("similarity")
+                        "similarity": rec.get("similarity"),
+                        "based_on": rating["item_id"]  # Show what it's based on
                     })
                     
                     if len(recommendations) >= limit:
@@ -323,10 +352,33 @@ async def get_content_based_recommendations(user_id: int, limit: int, db):
             if len(recommendations) >= limit:
                 break
         
+        if len(recommendations) == 0:
+            # If still no recommendations, get items from different languages/categories
+            logger.info("No similar items found, getting diverse content")
+            movies = db.table("movies").select("id, title, poster_url, language").order("created_at", desc=True).limit(limit).execute()
+            recommendations = [{
+                "item_id": str(m["id"]),
+                "item_type": "movie",
+                "title": m["title"],
+                "poster_url": m["poster_url"]
+            } for m in movies.data]
+            return {"recommendations": recommendations[:limit], "method": "diverse_fallback"}
+        
         return {"recommendations": recommendations[:limit], "method": "content_based"}
     except Exception as e:
         logger.error(f"Content-based recommendation error: {e}")
-        return await get_popular_items(limit)
+        # Return diverse content instead of popular
+        try:
+            movies = db.table("movies").select("id, title, poster_url").order("created_at", desc=True).limit(limit).execute()
+            recommendations = [{
+                "item_id": str(m["id"]),
+                "item_type": "movie",
+                "title": m["title"],
+                "poster_url": m["poster_url"]
+            } for m in movies.data]
+            return {"recommendations": recommendations[:limit], "method": "error_fallback"}
+        except:
+            return {"recommendations": [], "method": "error"}
 
 @app.get("/recommendations/similar/{item_type}/{item_id}")
 async def get_similar_items(
