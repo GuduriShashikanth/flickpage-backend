@@ -525,16 +525,45 @@ Track user interactions for analytics and recommendations.
 }
 ```
 
+**IMPORTANT - Common Mistake**: 
+- `item_id` must be a **UUID** (the `id` field from movie/book objects)
+- ❌ **DO NOT** use `tmdb_id` (numeric like `123456`) or `google_id`
+- ✅ **USE** the `id` field (UUID like `"ff0b9d75-3b2f-403a-ab5b-1f18ab5e108f"`)
+
 **Interaction Types**:
 - `view`: User viewed item details
 - `click`: User clicked on item
 - `search`: Item appeared in search results
 
-**Response** (200):
+**Response** (200 - Success):
 ```json
 {
-  "message": "Interaction tracked"
+  "message": "Interaction tracked",
+  "success": true
 }
+```
+
+**Response** (200 - Error):
+```json
+{
+  "message": "Invalid item_id format",
+  "success": false,
+  "error": "item_id must be a valid UUID...",
+  "hint": "Make sure you're using movie.id or book.id, not movie.tmdb_id"
+}
+```
+
+**Example - Correct Usage**:
+```javascript
+// ✅ Correct - Using the UUID 'id' field
+const response = await fetch('/search/semantic?q=action');
+const data = await response.json();
+const movieId = data.results[0].id;  // This is the UUID
+trackInteraction(movieId, "movie", "view");
+
+// ❌ Wrong - Using tmdb_id (numeric)
+const tmdbId = data.results[0].tmdb_id;  // This is a number
+trackInteraction(tmdbId, "movie", "view");  // Will fail!
 ```
 
 ---

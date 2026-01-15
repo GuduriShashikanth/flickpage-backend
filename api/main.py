@@ -214,14 +214,18 @@ async def track_interaction(
     
     try:
         # Ensure item_id is a valid UUID string
-        item_id = str(interaction.item_id)
+        item_id = str(interaction.item_id).strip()
         
         # Validate UUID format
         from uuid import UUID
         try:
             UUID(item_id)
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid item_id format. Must be a valid UUID.")
+            logger.warning(f"Invalid UUID format for item_id: {item_id}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid item_id format. Expected UUID, got: {item_id}. Please use the 'id' field from movie/book objects, not tmdb_id or other numeric IDs."
+            )
         
         result = db.table("interactions").insert({
             "user_id": current_user["user_id"],
@@ -235,9 +239,20 @@ async def track_interaction(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Interaction tracking error: {e}")
+        error_msg = str(e)
+        logger.error(f"Interaction tracking error: {error_msg}")
+        
+        # Check if it's a UUID error
+        if "invalid input syntax for type uuid" in error_msg.lower():
+            return {
+                "message": "Invalid item_id format", 
+                "success": False, 
+                "error": "item_id must be a valid UUID (e.g., 'ff0b9d75-3b2f-403a-ab5b-1f18ab5e108f'). Use the 'id' field from movie/book objects, not 'tmdb_id'.",
+                "hint": "Make sure you're using movie.id or book.id, not movie.tmdb_id"
+            }
+        
         # Return 200 but with success=false to not break frontend
-        return {"message": "Interaction tracking failed", "success": False, "error": str(e)}
+        return {"message": "Interaction tracking failed", "success": False, "error": error_msg}
 
 @app.get("/search/semantic")
 async def semantic_search(
