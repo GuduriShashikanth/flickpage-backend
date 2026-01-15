@@ -7,11 +7,13 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["ONNXRUNTIME_ENABLE_TELEMETRY"] = "0"
 
 import logging
+import requests
 from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastembed import TextEmbedding
 from dotenv import load_dotenv
 from typing import List, Optional
+from uuid import UUID
 
 # Import local modules
 from api.database import get_db
@@ -24,8 +26,6 @@ from api.models import (
     RatingCreate, RatingResponse, InteractionCreate,
     RecommendationResponse
 )
-from typing import Union
-from uuid import UUID
 
 # 1. Setup Logging
 logging.basicConfig(level=logging.INFO)
@@ -212,14 +212,32 @@ async def track_interaction(
     """Track user interaction (view, click, search)"""
     db = get_db()
     
-    result = db.table("interactions").insert({
-        "user_id": current_user["user_id"],
-        "item_id": interaction.item_id,
-        "item_type": interaction.item_type,
-        "interaction_type": interaction.interaction_type
-    }).execute()
-    
-    return {"message": "Interaction tracked"}
+    try:
+        # Ensure item_id is a valid UUID string
+        item_id = str(interaction.item_id)
+        
+        # Validate UUID format
+        from uuid import UUID
+        try:
+            UUID(item_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid item_id format. Must be a valid UUID.")
+        
+        result = db.table("interactions").insert({
+            "user_id": current_user["user_id"],
+            "item_id": item_id,
+            "item_type": interaction.item_type,
+            "interaction_type": interaction.interaction_type
+        }).execute()
+        
+        logger.info(f"Interaction tracked: user={current_user['user_id']}, item={item_id}, type={interaction.interaction_type}")
+        return {"message": "Interaction tracked", "success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Interaction tracking error: {e}")
+        # Return 200 but with success=false to not break frontend
+        return {"message": "Interaction tracking failed", "success": False, "error": str(e)}
 
 @app.get("/search/semantic")
 async def semantic_search(
@@ -260,9 +278,6 @@ async def semantic_search(
 
 async def search_tmdb_and_add(query: str, limit: int, db, model):
     """Search TMDB, add results to DB, and return them"""
-    import os
-    import requests
-    
     tmdb_api_key = os.getenv("TMDB_API_KEY")
     if not tmdb_api_key:
         logger.error("TMDB API key not configured")
@@ -281,12 +296,14 @@ async def search_tmdb_and_add(query: str, limit: int, db, model):
         
         response = requests.get(url, params=params, timeout=5)
         if response.status_code != 200:
+            logger.error(f"TMDB API error: {response.status_code}")
             return []
         
         data = response.json()
         results = data.get("results", [])[:limit]
         
         if not results:
+            logger.info(f"No TMDB results for query: {query}")
             return []
         
         # Add movies to database and return formatted results
@@ -298,7 +315,7 @@ async def search_tmdb_and_add(query: str, limit: int, db, model):
             
             try:
                 # Check if movie already exists
-                existing = db.table("movies").select("id, tmdb_id, title, overview, poster_url, language").eq("tmdb_id", movie["id"]).execute()
+                existing = db.table("movies").select("id, tmdb_id, title, overview, poster_url, language, release_date").eq("tmdb_id", movie["id"]).execute()
                 
                 if existing.data:
                     # Movie exists, return it
@@ -310,7 +327,7 @@ async def search_tmdb_and_add(query: str, limit: int, db, model):
                         "poster_url": existing.data[0]["poster_url"],
                         "language": existing.data[0]["language"],
                         "similarity": 0.9,  # High similarity since it's a direct search match
-                        "release_date": movie.get("release_date")
+                        "release_date": existing.data[0].get("release_date")
                     })
                 else:
                     # Generate embedding for the movie
@@ -346,9 +363,10 @@ async def search_tmdb_and_add(query: str, limit: int, db, model):
                         logger.info(f"Added movie from TMDB: {movie['title']}")
             
             except Exception as e:
-                logger.error(f"Error adding TMDB movie: {e}")
+                logger.error(f"Error adding TMDB movie '{movie.get('title', 'unknown')}': {e}")
                 continue
         
+        logger.info(f"TMDB search returned {len(added_movies)} movies for query: {query}")
         return added_movies
     
     except Exception as e:
@@ -586,10 +604,8 @@ async def get_movie(movie_id: str, include_details: bool = False):
     # If include_details is True, fetch additional data from TMDB
     if include_details and movie.get("tmdb_id"):
         try:
-            import os
             tmdb_api_key = os.getenv("TMDB_API_KEY")
             if tmdb_api_key:
-                import requests
                 # Fetch movie details from TMDB
                 tmdb_url = f"https://api.themoviedb.org/3/movie/{movie['tmdb_id']}"
                 params = {
@@ -627,6 +643,8 @@ async def get_movie(movie_id: str, include_details: bool = False):
                     movie["revenue"] = tmdb_data.get("revenue")
                     movie["vote_average"] = tmdb_data.get("vote_average")
                     movie["vote_count"] = tmdb_data.get("vote_count")
+                else:
+                    logger.error(f"TMDB API error for movie {movie['tmdb_id']}: {response.status_code}")
         except Exception as e:
             logger.error(f"TMDB fetch error: {e}")
             # Continue without TMDB data
