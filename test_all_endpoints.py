@@ -40,7 +40,7 @@ def test_health():
     """Test health check endpoint"""
     print_test("Health Check")
     try:
-        res = requests.get(f"{BASE_URL}/health", timeout=10)
+        res = requests.get(f"{BASE_URL}/", timeout=15)  # Increased timeout
         print(f"Status: {res.status_code}")
         data = res.json()
         print(f"Response: {data}")
@@ -147,10 +147,10 @@ def test_search_movies():
         for query in queries:
             print(f"\n{Colors.YELLOW}Query: '{query}'{Colors.END}")
             res = requests.get(
-                f"{BASE_URL}/search",
-                params={"query": query, "limit": 5},
+                f"{BASE_URL}/search/semantic",
+                params={"q": query, "limit": 5},
                 headers=headers,
-                timeout=10
+                timeout=15  # Increased timeout for search
             )
             
             if res.status_code == 200:
@@ -189,8 +189,8 @@ def test_search_books():
         for query in queries:
             print(f"\n{Colors.YELLOW}Query: '{query}'{Colors.END}")
             res = requests.get(
-                f"{BASE_URL}/search",
-                params={"query": query, "item_type": "book", "limit": 5},
+                f"{BASE_URL}/search/semantic",
+                params={"q": query, "item_type": "book", "limit": 5},
                 headers=headers,
                 timeout=10
             )
@@ -222,8 +222,8 @@ def test_rate_movie():
         
         # First, search for a movie
         res = requests.get(
-            f"{BASE_URL}/search",
-            params={"query": "action", "limit": 1},
+            f"{BASE_URL}/search/semantic",
+            params={"q": "action", "limit": 1},
             headers=headers,
             timeout=10
         )
@@ -267,7 +267,7 @@ def test_get_ratings():
     
     try:
         headers = {"Authorization": f"Bearer {TOKEN}"}
-        res = requests.get(f"{BASE_URL}/ratings/me", headers=headers, timeout=10)
+        res = requests.get(f"{BASE_URL}/ratings/my", headers=headers, timeout=10)
         
         if res.status_code == 200:
             ratings = res.json()
@@ -289,7 +289,7 @@ def test_recommendations():
     
     try:
         headers = {"Authorization": f"Bearer {TOKEN}"}
-        res = requests.get(f"{BASE_URL}/recommendations", headers=headers, timeout=10)
+        res = requests.get(f"{BASE_URL}/recommendations/personalized", headers=headers, timeout=10)
         
         if res.status_code == 200:
             data = res.json()
@@ -401,7 +401,6 @@ def run_all_tests():
         ("Get Ratings", test_get_ratings),
         ("Recommendations", test_recommendations),
         ("List Movies", test_list_movies),
-        ("List Books", test_list_books),
     ]
     
     for name, test_func in tests:

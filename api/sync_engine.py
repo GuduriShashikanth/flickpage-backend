@@ -29,6 +29,62 @@ def get_embedding(text: str):
         logger.error(f"Embedding Error: {e}")
         return None
 
+def get_movie_details(tmdb_id: int):
+    """Fetch detailed movie information including cast and crew from TMDB"""
+    try:
+        # Get movie details with credits
+        url = f"https://api.themoviedb.org/3/movie/{tmdb_id}"
+        params = {
+            'api_key': TMDB_API_KEY,
+            'append_to_response': 'credits'
+        }
+        res = requests.get(url, params=params, timeout=10)
+        
+        if res.status_code == 429:
+            time.sleep(2)
+            return None
+            
+        res.raise_for_status()
+        data = res.json()
+        
+        # Extract cast (top 10 actors)
+        cast = []
+        if 'credits' in data and 'cast' in data['credits']:
+            for person in data['credits']['cast'][:10]:
+                cast.append({
+                    'name': person.get('name'),
+                    'character': person.get('character'),
+                    'profile_path': person.get('profile_path')
+                })
+        
+        # Extract crew (director, writers, producers)
+        crew = []
+        director = None
+        if 'credits' in data and 'crew' in data['credits']:
+            for person in data['credits']['crew']:
+                job = person.get('job')
+                if job in ['Director', 'Writer', 'Screenplay', 'Producer']:
+                    crew.append({
+                        'name': person.get('name'),
+                        'job': job,
+                        'department': person.get('department')
+                    })
+                    if job == 'Director' and not director:
+                        director = person.get('name')
+        
+        # Extract genres
+        genres = [g['name'] for g in data.get('genres', [])]
+        
+        return {
+            'cast': cast,
+            'crew': crew,
+            'director': director,
+            'genres': genres
+        }
+    except Exception as e:
+        logger.error(f"Error fetching movie details for {tmdb_id}: {e}")
+        return None
+
 def get_indian_movies(total_target=10000):
     """Massive crawl of Indian regional movies across languages and genres"""
     logger.info(f"Targeting {total_target} Indian movies...")
@@ -209,6 +265,9 @@ def run_sync():
             continue
 
         try:
+            # Fetch detailed movie info including cast and crew
+            details = get_movie_details(m['id'])
+            
             payload = {
                 "tmdb_id": m['id'],
                 "title": m['title'],
@@ -218,10 +277,26 @@ def run_sync():
                 "language": m.get('original_language'),
                 "embedding": vector
             }
+            
+            # Add cast, crew, director, and genres if available
+            if details:
+                if details.get('cast'):
+                    payload['cast'] = details['cast']
+                if details.get('crew'):
+                    payload['crew'] = details['crew']
+                if details.get('director'):
+                    payload['director'] = details['director']
+                if details.get('genres'):
+                    payload['genres'] = details['genres']
+            
             supabase.table("movies").upsert(payload, on_conflict="tmdb_id").execute()
             synced_movies += 1
             if synced_movies % 100 == 0: 
                 logger.info(f"✓ Synced {synced_movies} movies (failed: {failed_movies})...")
+            
+            # Rate limiting for TMDB API
+            time.sleep(0.3)
+            
         except Exception as e:
             logger.error(f"DB Insert Error (Movie): {e}")
             failed_movies += 1
