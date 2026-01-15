@@ -258,10 +258,74 @@ async def get_personalized_recommendations(
             "recommendation_count": limit
         }).execute()
         
-        return {"recommendations": result.data, "method": "collaborative_filtering"}
+        if result.data and len(result.data) > 0:
+            return {"recommendations": result.data, "method": "collaborative_filtering"}
+        else:
+            # If no collaborative recommendations, try content-based on user's ratings
+            logger.info("No collaborative recommendations, trying content-based")
+            return await get_content_based_recommendations(current_user["user_id"], limit, db)
     except Exception as e:
         logger.error(f"Recommendation Error: {e}")
         # Fallback to popular items
+        return await get_popular_items(limit)
+
+async def get_content_based_recommendations(user_id: int, limit: int, db):
+    """Get recommendations based on user's rated items"""
+    try:
+        # Get user's top-rated items
+        user_ratings = db.table("ratings").select("item_id, item_type, rating").eq("user_id", user_id).gte("rating", 4.0).order("rating", desc=True).limit(3).execute()
+        
+        if not user_ratings.data:
+            # No high ratings, return popular items
+            return await get_popular_items(limit)
+        
+        recommendations = []
+        seen_ids = set()
+        
+        # For each highly rated item, find similar items
+        for rating in user_ratings.data:
+            item_id = rating["item_id"]
+            item_type = rating["item_type"]
+            
+            # Get item embedding
+            table = "movies" if item_type == "movie" else "books"
+            item = db.table(table).select("embedding").eq("id", item_id).execute()
+            
+            if not item.data:
+                continue
+            
+            embedding = item.data[0]["embedding"]
+            
+            # Find similar items
+            rpc_function = "match_movies" if item_type == "movie" else "match_books"
+            result = db.rpc(rpc_function, {
+                "query_embedding": embedding,
+                "match_threshold": 0.4,
+                "match_count": 10
+            }).execute()
+            
+            # Add to recommendations if not already seen
+            for rec in result.data:
+                rec_id = str(rec.get("id"))
+                if rec_id not in seen_ids and rec_id != str(item_id):
+                    seen_ids.add(rec_id)
+                    recommendations.append({
+                        "item_id": rec_id,
+                        "item_type": item_type,
+                        "title": rec.get("title"),
+                        "poster_url": rec.get("poster_url") or rec.get("thumbnail_url"),
+                        "similarity": rec.get("similarity")
+                    })
+                    
+                    if len(recommendations) >= limit:
+                        break
+            
+            if len(recommendations) >= limit:
+                break
+        
+        return {"recommendations": recommendations[:limit], "method": "content_based"}
+    except Exception as e:
+        logger.error(f"Content-based recommendation error: {e}")
         return await get_popular_items(limit)
 
 @app.get("/recommendations/similar/{item_type}/{item_id}")
@@ -309,10 +373,37 @@ async def get_popular_items(limit: int = 20):
             "item_limit": limit
         }).execute()
         
+        # If no popular items (not enough ratings), return recent movies
+        if not result.data or len(result.data) == 0:
+            logger.info("No popular items, returning recent movies")
+            recent_movies = db.table("movies").select("id, title, poster_url, language, release_date").order("created_at", desc=True).limit(limit).execute()
+            
+            popular_items = [{
+                "item_id": m["id"],
+                "item_type": "movie",
+                "title": m["title"],
+                "poster_url": m["poster_url"],
+                "avg_rating": None,
+                "rating_count": 0
+            } for m in recent_movies.data]
+            
+            return {"popular_items": popular_items, "method": "recent_items"}
+        
         return {"popular_items": result.data, "method": "popularity_based"}
     except Exception as e:
         logger.error(f"Popular items error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get popular items")
+        # Last resort: return some recent movies
+        try:
+            recent_movies = db.table("movies").select("id, title, poster_url, language").order("created_at", desc=True).limit(limit).execute()
+            popular_items = [{
+                "item_id": m["id"],
+                "item_type": "movie",
+                "title": m["title"],
+                "poster_url": m["poster_url"]
+            } for m in recent_movies.data]
+            return {"popular_items": popular_items, "method": "fallback"}
+        except:
+            return {"popular_items": [], "method": "error"}
 
 # ==================== MOVIE/BOOK ENDPOINTS ====================
 
